@@ -11,8 +11,5 @@
   "devDependencies": {
     "@types/node": "^18",
     "nuxt": "^3.4.3"
-  },
-  "dependencies": {
-    "@techstark/opencv-js": "^4.7.0-release.1"
   }
 }

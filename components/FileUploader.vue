@@ -1,108 +1,14 @@
-<script>
-import cv from '@techstark/opencv-js/dist/opencv.js';
-
-export default defineNuxtComponent({
-  data() {
-    return {
-      image: null,
-    };
-  },
-  methods: {
-    async loadImage(event) {
-      const canvas = this.$refs.canvas;
-      const context = canvas.getContext('2d');
-      const file = event.target.files[0];
-      const image = await this.loadImageFromFile(file);
-      canvas.width = image.width;
-      canvas.height = image.height;
-      context.drawImage(image, 0, 0, image.width, image.height);
-      const src = cv.imread(canvas);
-      const gray = new cv.Mat();
-      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-
-      // Apply adaptive thresholding
-      const threshold = new cv.Mat();
-      const blockSize = 11; // the size of the neighborhood for thresholding
-      const C = 2; // a constant value to be subtracted from the mean or weighted mean
-      cv.adaptiveThreshold(
-        gray,
-        threshold,
-        255,
-        cv.ADAPTIVE_THRESH_MEAN_C,
-        cv.THRESH_BINARY,
-        blockSize,
-        C
-      );
-
-      const canny = new cv.Mat();
-      cv.Canny(threshold, canny, 50, 100);
-      const contours = new cv.MatVector();
-      const hierarchy = new cv.Mat();
-      cv.findContours(
-        canny,
-        contours,
-        hierarchy,
-        cv.RETR_TREE,
-        cv.CHAIN_APPROX_SIMPLE
-      );
-      const largestContourIndex = this.getLargestContourIndex(contours);
-      const approx = new cv.Mat();
-      const epsilon =
-        0.1 * cv.arcLength(contours.get(largestContourIndex), true);
-      cv.approxPolyDP(contours.get(largestContourIndex), approx, epsilon, true);
-      cv.drawContours(
-        src,
-        contours,
-        largestContourIndex,
-        [255, 0, 0, 255],
-        2,
-        cv.LINE_8,
-        hierarchy,
-        0
-      );
-      cv.imshow(canvas, src);
-      src.delete();
-      gray.delete();
-      threshold.delete();
-      canny.delete();
-      contours.delete();
-      hierarchy.delete();
-      approx.delete();
-    },
-    async loadImageFromFile(file) {
-      return new Promise((resolve) => {
-        const image = new Image();
-        image.onload = () => {
-          resolve(image);
-        };
-        image.src = URL.createObjectURL(file);
-      });
-    },
-    getLargestContourIndex(contours) {
-      let largestContourIndex = 0;
-      let largestContourArea = 0;
-      for (let i = 0; i < contours.size(); i++) {
-        const area = cv.contourArea(contours.get(i));
-        if (area > largestContourArea) {
-          largestContourIndex = i;
-          largestContourArea = area;
-        }
-      }
-      return largestContourIndex;
-    },
-  },
-});
-</script>
-
 <template>
   <div class="container">
     <div class="image-container">
       <div class="image-wrapper">
+        <h1>Original</h1>
         <img class="original-image" ref="originalImage" />
         <div class="overlay"></div>
       </div>
       <div class="image-wrapper">
-        <img class="processed-image" ref="processedImage" />
+        <h1>Scanned</h1>
+        <canvas class="processed-image" ref="canvas"></canvas>
         <div class="overlay"></div>
       </div>
     </div>
@@ -110,46 +16,156 @@ export default defineNuxtComponent({
   </div>
 </template>
 
+<script>
+export default defineNuxtComponent({
+  head() {
+    return {
+      script: [
+        {
+          src: 'https://docs.opencv.org/4.x/opencv.js',
+        },
+      ],
+    };
+  },
+  data() {
+    return {
+      imageLoaded: false,
+      originalImage: null,
+      processedImage: '',
+      cvLoaded: false, // new variable to track OpenCV library load status
+    };
+  },
+  methods: {
+    loadImage(event) {
+      const file = event.target.files[0];
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => {
+        this.originalImage = this.$refs.originalImage;
+        this.originalImage.src = reader.result;
+        this.originalImage.onload = () => {
+          this.$refs.canvas.width = this.originalImage.width;
+          this.$refs.canvas.height = this.originalImage.height;
+          const context = this.$refs.canvas.getContext('2d');
+          context.drawImage(this.originalImage, 0, 0);
+          this.imageLoaded = true;
+          this.processImage();
+        };
+      };
+    },
+    processImage() {
+      if (!this.imageLoaded) return;
+
+      const canvas = this.$refs.canvas;
+      const context = canvas.getContext('2d');
+      context.drawImage(this.$refs.originalImage, 0, 0);
+      const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+      // Convert image to grayscale
+      const gray = new cv.Mat(canvas.height, canvas.width, cv.CV_8UC4);
+      const data = new Uint8Array(imageData.data.buffer);
+      gray.data.set(data);
+
+      cv.cvtColor(gray, gray, cv.COLOR_RGBA2GRAY);
+
+      // Apply Gaussian blur
+      const blurred = new cv.Mat();
+      cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
+
+      // Apply Canny edge detection
+      const edges = new cv.Mat();
+      cv.Canny(blurred, edges, 75, 200);
+
+      // Find contours in the image
+      const contours = new cv.MatVector();
+      const hierarchy = new cv.Mat();
+      cv.findContours(
+        edges,
+        contours,
+        hierarchy,
+        cv.RETR_LIST,
+        cv.CHAIN_APPROX_SIMPLE
+      );
+
+      // Find the largest contour that meets certain criteria (minimum area)
+      let largestContour = null;
+      let largestContourIdx = -1;
+      for (let i = 0; i < contours.size(); i++) {
+        const contour = contours.get(i);
+        const area = cv.contourArea(contour);
+        if (area > 5000) {
+          if (largestContour == null || area > cv.contourArea(largestContour)) {
+            largestContour = contour;
+            largestContourIdx = i;
+          }
+        }
+      }
+
+      if (largestContourIdx >= 0 && largestContourIdx < contours.size()) {
+        // Get the corners of the paper by applying a perspective transform
+        largestContour = contours.get(largestContourIdx);
+        const rect = cv.boundingRect(largestContour);
+        const src = new cv.Mat(4, 1, cv.CV_32FC2);
+        const dst = new cv.Mat(4, 1, cv.CV_32FC2);
+        src.data32F[0] = rect.x;
+        src.data32F[1] = rect.y;
+        src.data32F[2] = rect.x + rect.width;
+        src.data32F[3] = rect.y;
+        src.data32F[4] = rect.x;
+        src.data32F[5] = rect.y + rect.height;
+        src.data32F[6] = rect.x + rect.width;
+        src.data32F[7] = rect.y + rect.height;
+        dst.data32F[0] = 0;
+        dst.data32F[1] = 0;
+        dst.data32F[2] = this.scannedImageWidth;
+        dst.data32F[3] = 0;
+        dst.data32F[4] = 0;
+        dst.data32F[5] = this.scannedImageHeight;
+        dst.data32F[6] = this.scannedImageWidth;
+        dst.data32F[7] = this.scannedImageHeight;
+
+        const M = cv.getPerspectiveTransform(src, dst);
+        const warped = new cv.Mat();
+        cv.warpPerspective(
+          gray,
+          warped,
+          M,
+          new cv.Size(this.scannedImageWidth, this.scannedImageHeight)
+        );
+
+        // Set the scanned image data
+        const scannedData = new Uint8ClampedArray(
+          warped.data.byteLength * (4 / 1)
+        );
+        const scannedImageData = new ImageData(
+          scannedData,
+          this.scannedImageWidth,
+          this.scannedImageHeight
+        );
+        const scannedDataU8 = new Uint8Array(scannedData.buffer);
+        for (let i = 0; i < this.scannedImageHeight; i++) {
+          for (let j = 0; j < this.scannedImageWidth; j++) {
+            const index = i * this.scannedImageWidth + j;
+            const value = warped.ucharAt(i, j);
+            scannedDataU8[index * 4] = value;
+            scannedDataU8[index * 4 + 1] = value;
+            scannedDataU8[index * 4 + 2] = value;
+            scannedDataU8[index * 4 + 3] = 255;
+          }
+        }
+        this.scannedImageData = scannedImageData;
+      }
+      gray.delete();
+      blurred.delete();
+      edges.delete();
+      contours.delete();
+      hierarchy.delete();
+    },
+  },
+});
+</script>
 <style>
-.container {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100vh;
-}
-
-.image-container {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  align-items: center;
-  gap: 50px;
-  margin-bottom: 50px;
-}
-
-.image-wrapper {
-  position: relative;
-}
-
-.overlay {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  border: 2px solid red;
-  box-sizing: border-box;
-  pointer-events: none;
-}
-
+.processed-image,
 .original-image {
-  max-width: 500px;
-  max-height: 500px;
-}
-
-.processed-image {
-  max-width: 500px;
-  max-height: 500px;
+  width: 300px;
 }
 </style>
